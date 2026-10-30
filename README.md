@@ -16,7 +16,9 @@ spectate. It is pure heuristics and ball physics, with no ML.
 1. **Rocket League.** Install it through Epic Games (or Steam, if you own it there) on Windows, launch it
    once and close it. RLBot starts the game itself. There is no "UT4 client" in this setup: the only
    game client RLBot needs is Rocket League.
-2. **Python 3.10.** Install it from python.org and tick "Add python.exe to PATH".
+2. **Python 3.10 and this code.** Install Python from python.org and tick "Add python.exe to PATH".
+   Then get this repo: `git clone https://github.com/bradley09roberts-glitch/rocket-league-bot`, or
+   download it as a ZIP from GitHub and unzip it.
 3. **RLBot.** Pick one:
    - **RLBotGUI** (easiest): install it from [rlbot.org](https://rlbot.org), then click **Add** → **Load
      folder** and choose this `rocket-league-bot` folder. RLBotGUI installs `requirements.txt` for you.
