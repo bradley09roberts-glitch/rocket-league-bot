@@ -36,6 +36,8 @@ CONFIG = {
     "big_pad_detour": 8.0,         # m off our path we'll go for a 100 pad
     "small_pad_detour": 5.0,       # m off our path we'll go for a small pad...
     "small_pad_max_delay": 0.3,    # ...if it costs no more than this many seconds
+    "refuel_below": 40,            # under this, rotation goes to the nearest 100 pad on our side of the ball
+    "refuel_max_trip": 3.0,        # ...if we can be there within this many seconds
     "flip_reset_enabled": True,    # point the wheels at the ball on high attacking aerials
     "max_air_touches": 4,          # the 4-tap ceiling
     "reaction_time": 0.12,         # s a non-urgent state change must persist before we act on it
@@ -218,6 +220,10 @@ class Bot(BaseAgent):
         if zone == 1:
             # WHY: the ball is in our third and it isn't ours to take: drop to keeper.
             return self.hold(self.keeper_spot())
+        pad = self.refuel_pad()
+        if pad is not None:
+            # WHY: nearly empty and not needed at the ball: fill up at the nearest 100 on our side of it.
+            return self.drive_to(pad, 2300.0, False)
         away = -math.copysign(1.0, ball[0]) if abs(ball[0]) > 100 else 1.0
         if zone == 0:
             # WHY: midfield: sit goal-side, shaded to the side the ball isn't on, to cover the back post.
@@ -306,6 +312,15 @@ class Bot(BaseAgent):
             if active and off_path < reach and delay <= cap and delay < best_delay:
                 best, best_delay = loc, delay
         return best
+
+    def refuel_pad(self):
+        """Nearly empty: the closest active 100 pad between the ball and our goal we can reach in time."""
+        pads = [loc for (loc, big), active in zip(self.pads, self.pad_active)
+                if big and active and self.goal_sign * (loc[1] - self.ball_pos[1]) > 0]
+        if self.me.boost >= CONFIG["refuel_below"] or not pads:
+            return None
+        times = eta(self.me, np.array(pads))
+        return pads[int(np.argmin(times))] if times.min() <= CONFIG["refuel_max_trip"] else None
 
     def may_boost(self, purpose):
         """Boost tiers: saves always; positioning holds 50+; under 15 only for a ball in our half."""
@@ -540,8 +555,7 @@ class Bot(BaseAgent):
         return c
 
     def hold(self, spot):
-        """Get to `spot` and sit there facing the ball. The one place we don't run at full throttle:
-        a keeper doing laps in his own net is the Bronze move."""
+        """Get to `spot` and sit there facing the ball: a keeper doing laps in his own net is Bronze."""
         me = self.me
         local = me.local(spot - me.pos)
         dist = np.linalg.norm(flat(spot - me.pos))

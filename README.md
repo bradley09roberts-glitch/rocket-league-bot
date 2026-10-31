@@ -121,3 +121,21 @@ get near SSL, and this one hasn't faced a ranked player yet. The knobs most like
 tuning are `ground_jump_time`, `CONTACT` in `rl_physics.py`, the `0.8 * AIR_BOOST_ACC` aerial threshold
 in `aerial_ready`, and `prediction_time`. 1.5 s is too short to see where a sky-high ball lands, so try
 3.0.
+
+## What the first recorded game showed
+
+The first real 1v1 recording (about 2.5 minutes) showed:
+
+- **Boost starvation was the main problem.** The bot averaged 11 boost, sat under 15 for 83% of the game
+  and took one big pad. It never went supersonic and spent 40% of its time under 1000 uu/s, which is why
+  it felt slow to every ball.
+- **Its actual jumps mostly connected:** 4 of 6 jump shots touched the ball. So did 4 of 4 ground flips
+  and 3 of 3 kickoffs. The "whiffing" was mostly the bot planning an aerial it had no boost for, then
+  waiting under a ball it couldn't reach.
+- **The ball predictor is fine.** With no car near the ball, its typical error was 10–90 uu.
+
+The fix: when boost is under `refuel_below` (40) and the ball isn't ours, rotation goes to the nearest
+100 pad on our side of the ball, if it's within `refuel_max_trip` (3 s). In the stand-in sim this roughly
+doubled average boost (about 11 to about 25) and cut slow driving (under 1000 uu/s) from up to half the
+time to about a fifth. Against a frozen ball-chaser it went 21-4 over 10 games (19-4 before), with more
+touches. Two flip-timing changes were also tested there and made things worse, so they were dropped.
