@@ -39,6 +39,7 @@ CONFIG = {
     "max_air_touches": 4,          # the 4-tap ceiling
     "reaction_time": 0.12,         # s a non-urgent state change must persist before we act on it
     "speed_flips": True,           # front-flip on long straights when not boosting (~+500 uu/s for free)
+    "half_flips": True,            # turn round with a half flip when the target is far behind and we're slow
     "debug_render": True,          # state text, a line to our target and a line along the prediction
     "record_match": True,          # write recordings/*.csv every match (see README)
 }
@@ -60,6 +61,7 @@ class Bot(BaseAgent):
         self.routine, self.routine_name, self.mechanic = None, "", ""
         self.pads, self.score, self.last_touch_time, self.air_touches = [], None, 0.0, 0
         self.target_point, self.recorder, self.last_toucher = np.zeros(3), None, -1
+        self.last_half_flip = -10.0
 
     def get_output(self, packet: GameTickPacket) -> SimpleControllerState:
         self.read(packet)
@@ -496,6 +498,21 @@ class Bot(BaseAgent):
             return SimpleControllerState()   # already within a dive of it: stay on the line and wait
         return self.hold(spot)
 
+    def half_flip(self, roll):
+        """Backflip, cancel it with the stick forward, and air-roll until the wheels face down: we come out
+        facing the way we were backing up. Timings follow the usual player technique; untested in-game."""
+        start = self.last_half_flip = self.time   # (one at a time: if it ever fails to turn us, don't loop)
+        while self.time - start < 0.1:
+            yield SimpleControllerState(throttle=-1.0, jump=True)
+        yield SimpleControllerState(throttle=-1.0)                       # let go so the next press is a dodge
+        yield SimpleControllerState(throttle=-1.0, jump=True, pitch=1.0)  # the backflip
+        flip = self.time
+        while self.time - flip < 0.12:
+            yield SimpleControllerState(throttle=-1.0, pitch=1.0)
+        while not self.me.on_ground and self.time - flip < 1.2 and self.me.up[2] < 0.7:
+            yield SimpleControllerState(throttle=1.0, pitch=-1.0, roll=roll)   # cancel, roll wheels-down
+        yield from self.recover()
+
     def jump_up(self, double):
         """Jump straight up, sticks centred so it can't turn into a flip, then land on our wheels."""
         start = self.time
@@ -619,6 +636,11 @@ class Bot(BaseAgent):
             c.throttle = -1.0 if -forward_speed < speed else 0.0
             return c
         angle = math.atan2(local[1], local[0])
+        if (CONFIG["half_flips"] and me.on_ground and me.up[2] > 0.95 and abs(angle) > 2.6 and forward_speed < 500
+                and np.linalg.norm(flat(target - me.pos)) > 1500 and self.time - self.last_half_flip > 2.0):
+            # WHY: far target almost straight behind and we're slow: a half flip turns us round faster than
+            # a three-point turn or a powerslide from a standstill.
+            return self.start(self.half_flip(math.copysign(1.0, local[1] or 1.0)), "half flip")
         c.steer = clamp(3.0 * angle, -1.0, 1.0)
         c.handbrake = abs(angle) > 1.8 and forward_speed > 600
         # Don't arrive faster than we can turn onto the target: at 2300 uu/s the turning circle is ~23 m across.
