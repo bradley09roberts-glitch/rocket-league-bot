@@ -38,6 +38,7 @@ CONFIG = {
     "flip_reset_enabled": True,    # point the wheels at the ball on high attacking aerials
     "max_air_touches": 4,          # the 4-tap ceiling
     "reaction_time": 0.12,         # s a non-urgent state change must persist before we act on it
+    "speed_flips": True,           # front-flip on long straights when not boosting (~+500 uu/s for free)
     "debug_render": True,          # state text, a line to our target and a line along the prediction
     "record_match": True,          # write recordings/*.csv every match (see README)
 }
@@ -238,7 +239,7 @@ class Bot(BaseAgent):
         pad = self.refuel_pad()
         if pad is not None:
             # WHY: nearly empty and not needed at the ball: fill up at the nearest 100 on our side of it.
-            return self.drive_to(pad, 2300.0, False)
+            return self.drive_to(pad, 2300.0, False, flip_ok=True)
         away = -math.copysign(1.0, ball[0]) if abs(ball[0]) > 100 else 1.0
         if zone == 0:
             # WHY: midfield: sit goal-side, shaded to the side the ball isn't on, to cover the back post.
@@ -255,7 +256,7 @@ class Bot(BaseAgent):
         target = spot if pad is None else pad
         # Never idle: at least 1000 uu/s, so we loop around the spot like a player keeping momentum.
         speed = clamp(2 * np.linalg.norm(flat(target - self.me.pos)), 1000.0, 2300.0)
-        return self.drive_to(target, speed, self.may_boost("position"))
+        return self.drive_to(target, speed, self.may_boost("position"), flip_ok=True)
 
     def keeper_spot(self):
         # Far out, the 3.8 m shadow clamp. Once the ball is within 25 m, cover the near post fully.
@@ -394,7 +395,7 @@ class Bot(BaseAgent):
             pad = self.pad_on_path(target, CONFIG["small_pad_max_delay"]) if T > 1.0 else None
             if pad is not None:
                 target, want_speed = pad, 2300.0
-            return self.drive_to(target, max(want_speed, 600.0), boost_ok)
+            return self.drive_to(target, max(want_speed, 600.0), boost_ok, flip_ok=dist > 3000)
 
         if mech == FLIP_UP:
             lift = contact[2] - me.pos[2]
@@ -429,7 +430,7 @@ class Bot(BaseAgent):
             return self.hold(self.keeper_spot())   # already goal-side, or home: cover the net
         far = -math.copysign(1.0, ball[0]) if abs(ball[0]) > 50 else math.copysign(1.0, me.pos[0] or 1.0)
         post = np.array([far * (GOAL_HALF_W - 250), self.goal_sign * (FIELD_Y - 300), 0.0])
-        return self.drive_to(post, 2300.0, self.may_boost("save"))
+        return self.drive_to(post, 2300.0, self.may_boost("save"), flip_ok=True)
 
     def aerial_ready(self, target, T):
         """Would a double jump right now, plus boost, carry us to `target` in T seconds?"""
@@ -597,8 +598,9 @@ class Bot(BaseAgent):
         # WHY: airborne with no mechanic running (a bump, falling off a wall): land well before deciding anything.
         return self.start(self.recover(), "recover")
 
-    def drive_to(self, target, speed, boost_ok, reverse=False):
-        """Steer at `target` and hold `speed` (uu/s) using throttle, boost and powerslide."""
+    def drive_to(self, target, speed, boost_ok, reverse=False, flip_ok=False):
+        """Steer at `target` and hold `speed` (uu/s) using throttle, boost and powerslide. `flip_ok` allows speed
+        flips: only for runs to a spot, or to a far-away ball, since we can't react while flipping."""
         me = self.me
         self.target_point = target
         c = SimpleControllerState()
@@ -616,6 +618,11 @@ class Bot(BaseAgent):
         c.throttle = clamp((speed - forward_speed) / 250.0, -1.0, 1.0)
         c.boost = (boost_ok and speed - forward_speed > 150 and abs(angle) < 0.3
                    and forward_speed < 2200 and me.on_ground)
+        if (flip_ok and CONFIG["speed_flips"] and not (c.boost and me.boost > 0) and me.on_ground and me.up[2] > 0.95
+                and abs(angle) < 0.1 and 1000 < forward_speed < 2000 and speed - forward_speed > 400
+                and np.linalg.norm(flat(target - me.pos)) > forward_speed * 1.3 + 500):
+            # WHY: lined up on a long straight and not boosting: a front flip is half a second of boost for free.
+            return self.start(self.flip_hit(False, target), "speed flip")
         return c
 
     def hold(self, spot):
@@ -627,7 +634,8 @@ class Bot(BaseAgent):
         if dist > 400:
             if abs(math.atan2(local[1], local[0])) > 2.4 and dist < 1500:   # nearly straight behind: back up
                 return self.drive_to(spot, 1400.0 if urgent else 1000.0, False, reverse=True)
-            return self.drive_to(spot, min(2300.0, 1.5 * dist + 300), self.may_boost("save" if urgent else "position"))
+            return self.drive_to(spot, min(2300.0, 1.5 * dist + 300), self.may_boost("save" if urgent else "position"),
+                                 flip_ok=True)
         self.target_point = spot
         face = me.local(self.ball_pos - me.pos)
         angle = math.atan2(face[1], face[0])
