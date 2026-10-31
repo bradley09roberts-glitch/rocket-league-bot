@@ -7,6 +7,7 @@ spectate. It is pure heuristics and ball physics, with no ML.
 |---|---|
 | `main.py` | `CONFIG` and the full `Bot` class: state machine, mechanics, driving, air control |
 | `rl_physics.py` | Arena constants, the ball predictor, the car model and travel-time estimates |
+| `recorder.py` | Writes a CSV of each match to `recordings/` (see below) |
 | `bot.cfg`, `appearance.cfg` | What RLBot loads (name, Python file, Octane loadout) |
 | `rlbot.cfg`, `run.py` | Optional manual launcher: a 1v1 against Psyonix's All-Star bot |
 | `requirements.txt` | `rlbot>=1.30,<2` and `numpy` |
@@ -37,6 +38,20 @@ spectate. It is pure heuristics and ball physics, with no ML.
 
 For 3v3, add six participants in RLBotGUI. The bot reads teammates from the packet, so no config change
 is needed.
+
+## Recording a match
+
+Every match, each FourCans car writes a file to the `recordings` folder inside this folder, named
+like `20261031-201500-FourCans-0.csv`. A file has 60 rows a second: where the car and ball were, what
+the bot predicted, which state and move it chose, and which buttons it pressed. A 5-minute game is about
+5 MB.
+
+After a game that went badly, send the newest file from that folder, along with a note on what looked
+wrong ("whiffed every flip", "never challenged"). That is what lets the bot be tuned against the real
+game instead of a rough simulation.
+
+To turn recording off, set `"record_match": False` in `CONFIG` at the top of `main.py`. Old files are
+never deleted automatically.
 
 ## How it decides
 

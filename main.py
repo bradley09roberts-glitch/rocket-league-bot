@@ -14,6 +14,7 @@ from rlbot.utils.structures.game_data_struct import GameTickPacket
 from rl_physics import (AIR_BOOST_ACC, BALL_R, CONTACT, FIELD_X, FIELD_Y, GOAL_HALF_W, GRAVITY, JUMP_HOLD_ACC,
                         JUMP_HOLD_TIME, JUMP_IMPULSE, UU, WORLD_UP, Car, clamp, eta, first_reachable, flat,
                         jump_time, predict_ball, turn_speed, unit, vec3)
+from recorder import Recorder
 
 CONFIG = {
     "prediction_time": 1.5,        # seconds of ball prediction
@@ -39,6 +40,7 @@ CONFIG = {
     "max_air_touches": 4,          # the 4-tap ceiling
     "reaction_time": 0.12,         # s a non-urgent state change must persist before we act on it
     "debug_render": True,          # state text, a line to our target and a line along the prediction
+    "record_match": True,          # write recordings/*.csv every match (see README)
 }
 
 KICKOFF, SAVE, ATTACK, AERIAL, ROTATE = "KICKOFF", "SAVE", "ATTACK", "AERIAL", "ROTATE"
@@ -57,7 +59,7 @@ class Bot(BaseAgent):
         self.state, self.pending, self.pending_since = ROTATE, None, 0.0
         self.routine, self.routine_name, self.mechanic = None, "", ""
         self.pads, self.score, self.last_touch_time, self.air_touches = [], None, 0.0, 0
-        self.target_point = np.zeros(3)
+        self.target_point, self.recorder, self.last_toucher = np.zeros(3), None, -1
 
     # ------------------------------------------------------------------ the tick
     def get_output(self, packet: GameTickPacket) -> SimpleControllerState:
@@ -78,6 +80,8 @@ class Bot(BaseAgent):
                        AERIAL: self.attack, ROTATE: self.rotate}[self.state]
             # AERIAL differs from ATTACK only in its trigger; go_hit's height bands already pick an air mechanic.
             controls = self.recover_if_airborne() or handler()
+        if CONFIG["record_match"]:
+            self.record(controls)
         self.render()
         return controls
 
@@ -93,7 +97,7 @@ class Bot(BaseAgent):
         self.is_kickoff = abs(self.ball_pos[0]) < 1 and abs(self.ball_pos[1]) < 1 and np.linalg.norm(self.ball_vel) < 1
         touch = ball.latest_touch
         self.touched = touch.player_index == self.index and touch.time_seconds != self.last_touch_time
-        self.last_touch_time = touch.time_seconds
+        self.last_touch_time, self.last_toucher = touch.time_seconds, touch.player_index
         self.goal_sign = -1.0 if self.team == 0 else 1.0          # y sign of the goal we defend
         self.our_goal = np.array([0.0, self.goal_sign * FIELD_Y, 0.0])
         if not self.pads:
@@ -555,6 +559,19 @@ class Bot(BaseAgent):
         return SimpleControllerState(throttle=throttle, steer=clamp(3.0 * angle, -1.0, 1.0) * math.copysign(1.0, throttle))
 
     # ------------------------------------------------------------------ debug
+    def record(self, controls):
+        try:
+            if self.recorder is None:
+                self.recorder = Recorder(self.name, self.index)
+            self.recorder.log(self, controls)
+        except Exception as error:   # a broken recorder must never cost us a game
+            CONFIG["record_match"] = False
+            self.logger.warning(f"Match recording stopped: {error}")
+
+    def retire(self):
+        if self.recorder is not None:
+            self.recorder.close()
+
     def render(self):
         if not CONFIG["debug_render"]:
             return
