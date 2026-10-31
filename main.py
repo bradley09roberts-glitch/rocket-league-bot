@@ -13,7 +13,8 @@ from rl_physics import (AIR_BOOST_ACC, BALL_R, CONTACT, FIELD_X, FIELD_Y, GOAL_H
 from recorder import instrument
 
 CONFIG = {
-    "prediction_time": 1.5,        # seconds of ball prediction
+    "prediction_time": 3.0,        # seconds of ball prediction (RLBot's own when available; was 1.5)
+    "shot_alarm_time": 2.0,        # s: a predicted goal against within this long puts us in SAVE
     "keeper_clamp_x": 3.8,         # m the keeper may drift off centre (the posts are at ±8.93 m)
     "keeper_clamp_factor": 0.75,   # how much we follow ball.x
     "side_angle_deg": 45,          # approach angle off goal line
@@ -111,9 +112,10 @@ class Bot(BaseAgent):
 
     def plan(self):
         """Predict the ball, find where we can first meet it, and work out who else gets there first."""
-        self.times, self.path, self.path_vel = predict_ball(self.ball_pos, self.ball_vel, CONFIG["prediction_time"])
+        self.times, self.path, self.path_vel = self.predict()
         in_net = np.nonzero(np.abs(self.path[:, 1]) > FIELD_Y)[0]
-        self.on_target = len(in_net) > 0 and self.goal_sign * self.path[in_net[0], 1] > 0
+        self.on_target = (len(in_net) > 0 and self.goal_sign * self.path[in_net[0], 1] > 0
+                          and self.times[in_net[0]] <= CONFIG["shot_alarm_time"])
         self.crossing, self.cross_t = (self.path[in_net[0]], self.times[in_net[0]]) if len(in_net) else (None, math.inf)
         if len(in_net):  # once it's in a net there is nothing left to hit: plan only on the live part
             live = max(int(in_net[0]), 1)
@@ -127,6 +129,22 @@ class Bot(BaseAgent):
         # The keeper tracks where the ball will be in about half a second. Tracking the end of the prediction
         # sent it to the far post in a real game while the shot came at the near one.
         self.cross_x = self.crossing[0] if self.on_target else self.path[min(30, len(self.path) - 1), 0]
+
+    def predict(self):
+        """(times, positions, velocities) of the ball for the next prediction_time seconds. RLBot's own prediction
+        uses the real arena mesh (curved walls and all); our simple model is the fallback when it isn't there."""
+        horizon = CONFIG["prediction_time"]
+        try:
+            pred = self.get_ball_prediction_struct()
+            # Each slice is 13 floats: location, rotation, velocity, angular velocity, game_seconds.
+            raw = np.frombuffer(pred.slices, dtype=np.float32, count=13 * pred.num_slices).reshape(-1, 13)
+        except Exception:   # not running under RLBot (tests), or the prediction isn't ready yet
+            raw = np.zeros((0, 13), dtype=np.float32)
+        times = raw[:, 12].astype(float) - self.time
+        keep = (times > 0) & (times <= horizon + 1e-6)
+        if keep.sum() < 10:
+            return predict_ball(self.ball_pos, self.ball_vel, horizon)
+        return times[keep], raw[keep, 0:3].astype(float), raw[keep, 6:9].astype(float)
 
     def arrival(self, car):
         """(seconds until `car` can first meet the predicted ball, prediction index or None)."""
@@ -360,6 +378,8 @@ class Bot(BaseAgent):
         want_speed = dist / max(T, 0.05)
         if mech == GROUND and self.reachable and self.ball_pos[2] < 2 * BALL_R:
             want_speed = 2300.0   # it's rolling: nothing to time, so get there (pacing to T just stalls us)
+        if mech in (GROUND, FLIP_UP) and self.foe_time < T + 0.3:
+            want_speed = 2300.0   # contested: race them to it rather than arriving politely on time
         to_contact = me.local(under - flat(me.pos))
         lined_up = abs(math.atan2(to_contact[1], to_contact[0])) < 0.35
 
