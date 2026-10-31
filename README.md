@@ -168,3 +168,34 @@ Against the frozen ball-chaser the bot now concedes nothing over 10 games (4 bef
 less: 12-0 against 21-4, with fewer touches. Staying home costs some attack. That's the trade-off chosen,
 because defence is what is losing real games.
 
+## What the third recorded game showed
+
+The defending was better at times (it blocked and dived), but the game was lost 12-1, with the 1 an own
+goal by the opponent. The bot:
+
+- **Scored three own goals.** It jumped at the ball from the upfield side, and twice flipped into it
+  while driving at its own goal. It never checked where the ball would go after its touch.
+- **Barely attacked.** The ball was in its half 86% of the game and the opponent reached it first
+  two-thirds of the time. Its arrival estimates were accurate, so this was real. But when the opponent
+  carried the ball into its third, it waited in net.
+- **Never flipped for speed,** so it stayed under supersonic whenever it had no boost.
+- **Made one aerial attempt** in three games.
+
+The changes, each kept only if it held up in testing:
+
+| Change | Evidence |
+|---|---|
+| **Own-goal check:** before any hit, estimate where the ball goes (its velocity plus a push along the car-to-ball line); if that enters our net within 3 s, get goal-side round the far post instead | Flags all 3 real own goals; flags 2 of the 57 real hits that turned out fine |
+| **RLBot's own ball prediction** (the real arena shape), 3 s look-ahead (`prediction_time`), shot alarm kept at 2 s (`shot_alarm_time`) | Reads the RLBot struct correctly (checked with a filled struct) |
+| **Race for contested balls:** ground and jump-shot approaches go full speed when the opponent could get there around the same time | With the 3 s look-ahead: 28-3 against the ball-chaser over 10 games (10-1 before) |
+| **Challenge the carrier:** when the opponent has the ball in our third and we're goal-side within 25 m | Conditions held for about 23 s of the third real game; can't be measured in the sim |
+| **Speed flips** (`speed_flips`): front flip on long runs to a spot or a far ball when not boosting | Average speed 1144 to 1221 uu/s, supersonic 10% to 13% |
+| **Half flips** (`half_flips`): when the target is far behind and we're nearly stopped | **Not verified in the real game.** The sim can't model a flip cancel; the next recording will show it |
+
+Tried and dropped: letting it speed-flip on every approach (fewer goals), a keeper boost top-up near goal
+(21-3 vs 30-3), racing under every high ball and earlier aerial takeoffs (conceded 11 vs 1).
+
+Aerials, flicks and flip resets need real-game data the matches don't provide: one aerial chance and zero
+dribbles in three games. The way forward is a practice mode that uses RLBot's state setting to stage
+dozens of those situations in the real game and record them.
+
