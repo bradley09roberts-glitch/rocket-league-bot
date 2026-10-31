@@ -331,6 +331,9 @@ class Bot(BaseAgent):
     def go_hit(self, aim, purpose):
         """Meet the predicted ball and send it toward `aim`, with the mechanic its height calls for."""
         me, ball, T = self.me, self.predicted_ball_pos, self.target_t
+        if self.own_goal_risk(ball, self.predicted_ball_vel):
+            # WHY: from where we are, the touch would send it into our own net. Get goal-side first.
+            return self.go_goal_side()
         h = ball[2]
         if h < CONFIG["flip_reset_height_min"] * UU:
             mech = GROUND
@@ -386,6 +389,27 @@ class Bot(BaseAgent):
             # WHY: from here a double jump plus boost carries us to the contact point on time.
             return self.start(self.air_routine(mech, aim, True, purpose), mech)
         return self.drive_to(under, want_speed, boost_ok)
+
+    def own_goal_risk(self, ball, ball_vel):
+        """Would our touch put `ball` in our own net? Rough model of a hit: the ball keeps its velocity and gets
+        pushed along the line from our car to it, by our closing speed plus a flip's worth."""
+        me = self.me
+        normal = unit(flat(ball - me.pos))
+        out = ball_vel + normal * (max(0.0, (me.vel - ball_vel) @ normal) * 1.5 + 500.0)
+        toward = self.goal_sign * out[1]
+        if toward <= 0:
+            return False
+        t = self.goal_sign * (self.our_goal[1] - ball[1]) / toward   # seconds until it reaches our goal line
+        return t < 3.0 and abs(ball[0] + out[0] * t) < GOAL_HALF_W + 200
+
+    def go_goal_side(self):
+        """Get between the ball and our net round the far side of the ball (the back post), never through it."""
+        me, ball = self.me, self.ball_pos
+        if self.goal_sign * (me.pos[1] - ball[1]) > 300 or np.linalg.norm(flat(me.pos - self.our_goal)) < 1200:
+            return self.hold(self.keeper_spot())   # already goal-side, or home: cover the net
+        far = -math.copysign(1.0, ball[0]) if abs(ball[0]) > 50 else math.copysign(1.0, me.pos[0] or 1.0)
+        post = np.array([far * (GOAL_HALF_W - 250), self.goal_sign * (FIELD_Y - 300), 0.0])
+        return self.drive_to(post, 2300.0, self.may_boost("save"))
 
     def aerial_ready(self, target, T):
         """Would a double jump right now, plus boost, carry us to `target` in T seconds?"""
