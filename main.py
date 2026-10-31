@@ -182,6 +182,14 @@ class Bot(BaseAgent):
             # WHY: a midfield or our-half ball we get to first (in 3v3 the first man always pressures).
             # Nobody else on our team is going to take it.
             return ATTACK
+        carrier = min(self.foes, key=lambda f: np.linalg.norm(f.pos - self.ball_pos), default=None)
+        if (first_mate and carrier is not None and np.linalg.norm(carrier.pos - self.ball_pos) < 400
+                and self.ball_pos[2] < 300 and self.zone(self.ball_pos) == 1
+                and self.goal_sign * (me.pos[1] - self.ball_pos[1]) > 0
+                and np.linalg.norm(flat(me.pos - self.ball_pos)) < 2500):
+            # WHY: they're carrying it into our third and we're goal-side: waiting in net hands them a free
+            # shot (most goals in the real games came that way). Challenge it now.
+            return ATTACK
         # WHY: someone else gets there first, so be where the ball goes next instead of chasing it.
         return ROTATE
 
