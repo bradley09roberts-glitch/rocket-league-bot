@@ -7,7 +7,7 @@ spectate. It is pure heuristics and ball physics, with no ML.
 |---|---|
 | `main.py` | `CONFIG` and the full `Bot` class: state machine, mechanics, driving, air control |
 | `rl_physics.py` | Arena constants, the ball predictor, the car model and travel-time estimates |
-| `recorder.py` | Writes a CSV of each match to `recordings/` (see below) |
+| `recorder.py` | The in-game debug overlay, and a CSV of each match in `recordings/` (see below) |
 | `bot.cfg`, `appearance.cfg` | What RLBot loads (name, Python file, Octane loadout) |
 | `rlbot.cfg`, `run.py` | Optional manual launcher: a 1v1 against Psyonix's All-Star bot |
 | `requirements.txt` | `rlbot>=1.30,<2` and `numpy` |
@@ -139,3 +139,32 @@ The fix: when boost is under `refuel_below` (40) and the ball isn't ours, rotati
 doubled average boost (about 11 to about 25) and cut slow driving (under 1000 uu/s) from up to half the
 time to about a fifth. Against a frozen ball-chaser it went 21-4 over 10 games (19-4 before), with more
 touches. Two flip-timing changes were also tested there and made things worse, so they were dropped.
+
+## What the second recorded game showed
+
+The refuel change worked: average boost went from 11 to 24 and big-pad pickups went up. But the game was
+lost 10-0, because the keeping collapsed. The bot stopped 7 of 9 shots on target in game 1, and 2 of 12
+in game 2 (from closer range). Of the 10 goals:
+
+- **5 were scored with the bot already in goal.** Its keeper position followed where the ball would be
+  in 1.5 s, so a ball rolling across the face of goal sent it to the far post as the shot came at the near
+  one. With no boost it jumped out at high shots and drifted past them. Parked facing out, it couldn't get
+  sideways to a shot 2–3 m away without arcing off the line.
+- **5 came while it was caught 12–55 m from goal.** Only 2 of all 10 goals followed a refuel trip.
+
+The changes:
+
+- The keeper now tracks the ball half a second ahead, not 1.5 s.
+- It covers the near post fully once the ball is within 25 m (the 3.8 m clamp still applies further out).
+- On its line, it jumps straight up into high shots, timed to the ball's height. If a jump can't reach,
+  it doesn't jump.
+- It side-flips into low shots passing within 6 m, instead of trying to drive round to them.
+
+On a harder stand-in test (close, lofted and wide shots against a keeper with no boost), saves went from
+18 to 28 of 60. Close low shots went from 9 to 15 of 20. Lofted (5/20) and wide (8/20) shots are still
+weak. The easy 30-shot test is still 30/30.
+
+Against the frozen ball-chaser the bot now concedes nothing over 10 games (4 before), but also scores
+less: 12-0 against 21-4, with fewer touches. Staying home costs some attack. That's the trade-off chosen,
+because defence is what is losing real games.
+

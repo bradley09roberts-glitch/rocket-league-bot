@@ -1,6 +1,6 @@
-"""Match recorder for FourCans: 60 rows a second of what the bot saw, decided and pressed, written to
-recordings/<date>-<time>-<bot name>-<index>.csv next to this file. One row per frame makes whiffs,
-late challenges and bad positioning visible from real games instead of guessed at."""
+"""Instrumentation for FourCans, kept out of the gameplay code: the match recorder (60 rows a second of
+what the bot saw, decided and pressed, written to recordings/<date>-<time>-<bot name>-<index>.csv next
+to this file) and the in-game debug overlay."""
 import csv
 import os
 import time
@@ -50,3 +50,24 @@ class Recorder:
 
     def close(self):
         self.file.close()
+
+
+def instrument(bot, controls, config):
+    """Called once a tick after the bot has decided: record the match and draw the overlay."""
+    if config["record_match"]:
+        try:
+            if bot.recorder is None:
+                bot.recorder = Recorder(bot.name, bot.index)
+            bot.recorder.log(bot, controls)
+        except Exception as error:   # a broken recorder must never cost us a game
+            config["record_match"] = False
+            bot.logger.warning(f"Match recording stopped: {error}")
+    if config["debug_render"]:
+        r = bot.renderer
+        r.begin_rendering()
+        move = bot.routine_name if bot.routine else bot.mechanic
+        text = f"{bot.name}: {bot.state} | {move or '-'} | boost {bot.me.boost} | taps {bot.air_touches}"
+        r.draw_string_2d(20, 20 + 30 * bot.index, 1, 1, text, r.white())
+        r.draw_line_3d(bot.me.pos, bot.target_point, r.cyan())
+        r.draw_line_3d(bot.ball_pos, bot.path[-1], r.yellow())
+        r.end_rendering()

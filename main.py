@@ -1,11 +1,7 @@
 """FourCans: a fully autonomous, heuristic Rocket League bot for RLBot v4 (the `rlbot` 1.x Python package).
-
-The bot is the player. It takes kickoffs, shoots, saves, rotates and manages boost with no human input.
-A priority state machine (KICKOFF, SAVE, ATTACK, AERIAL, ROTATE) decides what to do, and a handful of
-mechanics do it: ground flip-hit, flip-up jump shot, wave volley, and an aerial that tries flip resets.
-Distances in CONFIG are metres, as specified; the game itself works in Unreal units (1 uu = 1 cm).
-Arena constants, the ball predictor and the car model live next door in rl_physics.py.
-"""
+A priority state machine (KICKOFF, SAVE, ATTACK, AERIAL, ROTATE) decides what to do; ground flips, jump
+shots, wave volleys, aerials and on-the-line saves do it. CONFIG distances are metres; the game works in Unreal
+units (1 uu = 1 cm). Physics lives in rl_physics.py, match recording and the debug overlay in recorder.py."""
 import math
 
 import numpy as np
@@ -14,7 +10,7 @@ from rlbot.utils.structures.game_data_struct import GameTickPacket
 from rl_physics import (AIR_BOOST_ACC, BALL_R, CONTACT, FIELD_X, FIELD_Y, GOAL_HALF_W, GRAVITY, JUMP_HOLD_ACC,
                         JUMP_HOLD_TIME, JUMP_IMPULSE, UU, WORLD_UP, Car, clamp, eta, first_reachable, flat,
                         jump_time, predict_ball, turn_speed, unit, vec3)
-from recorder import Recorder
+from recorder import instrument
 
 CONFIG = {
     "prediction_time": 1.5,        # seconds of ball prediction
@@ -63,7 +59,6 @@ class Bot(BaseAgent):
         self.pads, self.score, self.last_touch_time, self.air_touches = [], None, 0.0, 0
         self.target_point, self.recorder, self.last_toucher = np.zeros(3), None, -1
 
-    # ------------------------------------------------------------------ the tick
     def get_output(self, packet: GameTickPacket) -> SimpleControllerState:
         self.read(packet)
         if self.me.demoed or not (packet.game_info.is_round_active or self.is_kickoff):
@@ -82,9 +77,7 @@ class Bot(BaseAgent):
                        AERIAL: self.attack, ROTATE: self.rotate}[self.state]
             # AERIAL differs from ATTACK only in its trigger; go_hit's height bands already pick an air mechanic.
             controls = self.recover_if_airborne() or handler()
-        if CONFIG["record_match"]:
-            self.record(controls)
-        self.render()
+        instrument(self, controls, CONFIG)   # match recording and the debug overlay (recorder.py)
         return controls
 
     def read(self, packet):
@@ -121,7 +114,7 @@ class Bot(BaseAgent):
         self.times, self.path, self.path_vel = predict_ball(self.ball_pos, self.ball_vel, CONFIG["prediction_time"])
         in_net = np.nonzero(np.abs(self.path[:, 1]) > FIELD_Y)[0]
         self.on_target = len(in_net) > 0 and self.goal_sign * self.path[in_net[0], 1] > 0
-        crossing_x = self.path[in_net[0], 0] if len(in_net) else 0.0
+        self.crossing, self.cross_t = (self.path[in_net[0]], self.times[in_net[0]]) if len(in_net) else (None, math.inf)
         if len(in_net):  # once it's in a net there is nothing left to hit: plan only on the live part
             live = max(int(in_net[0]), 1)
             self.times, self.path, self.path_vel = self.times[:live], self.path[:live], self.path_vel[:live]
@@ -131,7 +124,9 @@ class Bot(BaseAgent):
         self.predicted_ball_pos, self.predicted_ball_vel, self.target_t = self.path[i], self.path_vel[i], self.times[i]
         self.mate_time = min((self.arrival(c)[0] for c in self.mates), default=math.inf)
         self.foe_time = min((self.arrival(c)[0] for c in self.foes), default=math.inf)
-        self.cross_x = crossing_x if self.on_target else self.predicted_ball_pos[0]
+        # The keeper tracks where the ball will be in about half a second. Tracking the end of the prediction
+        # sent it to the far post in a real game while the shot came at the near one.
+        self.cross_x = self.crossing[0] if self.on_target else self.path[min(30, len(self.path) - 1), 0]
 
     def arrival(self, car):
         """(seconds until `car` can first meet the predicted ball, prediction index or None)."""
@@ -140,7 +135,6 @@ class Bot(BaseAgent):
             return self.times[-1] + float(eta(car, self.path[-1:])[0]), None
         return self.times[i], i
 
-    # ------------------------------------------------------------------ the state machine
     def zone(self, pos):
         """+1 in our defensive third, -1 in our attacking third, 0 in midfield."""
         depth = self.goal_sign * pos[1]
@@ -184,7 +178,6 @@ class Bot(BaseAgent):
         elif self.pending != want:
             self.pending, self.pending_since = want, self.time
 
-    # ------------------------------------------------------------------ states
     def take_kickoff(self):
         me = self.me
         takers = sorted([me] + self.mates,
@@ -200,8 +193,12 @@ class Bot(BaseAgent):
         return self.drive_to(target, 2300.0, True)
 
     def make_save(self):
-        ball = self.predicted_ball_pos
-        if not self.goalside(self.ball_pos):
+        ball, me = self.predicted_ball_pos, self.me
+        home = abs(me.pos[1] - self.our_goal[1]) < 1000
+        if self.on_target and home and (self.crossing[2] > BALL_R + 60 or not self.reachable):
+            # WHY: a shot above our roof, or one we can't meet out front, while we're home: save it on the line.
+            return self.block()
+        if self.goal_sign * (me.pos[1] - self.ball_pos[1]) < -200:
             # WHY: we're on the wrong side of the ball; hitting it from here is how own goals happen.
             return self.hold(self.keeper_spot())
         if not self.reachable or not (self.my_time <= self.mate_time or self.on_target):
@@ -242,12 +239,10 @@ class Bot(BaseAgent):
         speed = clamp(2 * np.linalg.norm(flat(target - self.me.pos)), 1000.0, 2300.0)
         return self.drive_to(target, speed, self.may_boost("position"))
 
-    # ------------------------------------------------------------------ targets
-    def goalside(self, pos):
-        return self.goal_sign * (self.me.pos[1] - pos[1]) > -200
-
     def keeper_spot(self):
-        limit = CONFIG["keeper_clamp_x"] * UU
+        # Far out, the 3.8 m shadow clamp. Once the ball is within 25 m, cover the near post fully.
+        near = np.linalg.norm(flat(self.ball_pos - self.our_goal)) < 2500
+        limit = GOAL_HALF_W - 150 if near else CONFIG["keeper_clamp_x"] * UU
         x = clamp(self.cross_x * CONFIG["keeper_clamp_factor"], -limit, limit)
         if self.on_target:
             # A shot is coming: stand where it crosses the line. The 3.8 m shadow clamp would leave the far
@@ -333,7 +328,6 @@ class Bot(BaseAgent):
             return self.goal_sign * self.predicted_ball_pos[1] > 0
         return True
 
-    # ------------------------------------------------------------------ hitting the ball
     def go_hit(self, aim, purpose):
         """Meet the predicted ball and send it toward `aim`, with the mechanic its height calls for."""
         me, ball, T = self.me, self.predicted_ball_pos, self.target_t
@@ -418,7 +412,6 @@ class Bot(BaseAgent):
         i = int(ok[0]) if len(ok) else int(np.argmin(need))
         return contacts[i], t[i], need[i]
 
-    # ------------------------------------------------------------------ mechanics (one yield per tick)
     def start(self, routine, name):
         """Lock in a timed mechanic; it runs every tick until it finishes."""
         self.routine, self.routine_name = routine, name
@@ -432,12 +425,40 @@ class Bot(BaseAgent):
             self.routine = None
             return None
 
-    def flip_hit(self, boost):
+    def block(self):
+        """Save on the line: jump straight up into a high shot, side-flip into a low one passing us."""
+        me, spot = self.me, self.keeper_spot()
+        reach = np.nonzero(self.goal_sign * (self.path[:, 1] - me.pos[1]) > -BALL_R)[0]   # ball arrives at us
+        k = int(reach[0]) if len(reach) else len(self.times) - 1
+        lift = self.path[k, 2] - BALL_R - me.pos[2]
+        jt = jump_time(lift, lift > 220)
+        side = self.path[k, 0] - me.pos[0]   # how far to our side it arrives
+        if me.on_ground and jt is not None and self.times[k] <= jt + 0.05 and abs(side) < 250:
+            # WHY: the ball gets to us at the height our jump reaches right then: go straight up.
+            return self.start(self.jump_up(lift > 220), "block jump")
+        if me.on_ground and lift < 120 and 120 < abs(side) < 600 and self.times[k] < 0.6:
+            # WHY: a low shot passing within a flip of us: dive at it instead of driving round to it.
+            return self.start(self.flip_hit(False, self.path[k]), "save dive")
+        if abs(side) < 600 and self.times[k] < 1.0:
+            return SimpleControllerState()   # already within a dive of it: stay on the line and wait
+        return self.hold(spot)
+
+    def jump_up(self, double):
+        """Jump straight up, sticks centred so it can't turn into a flip, then land on our wheels."""
+        start = self.time
+        while self.time - start < JUMP_HOLD_TIME:
+            yield SimpleControllerState(jump=True)
+        if double:
+            yield SimpleControllerState()
+            yield SimpleControllerState(jump=True)
+        yield from self.recover()
+
+    def flip_hit(self, boost, target=None):
         """Hop, then dodge into the ball: the cheapest power shot in the game."""
         start = self.time
         while self.time - start < 0.08:
             yield SimpleControllerState(jump=True, throttle=1.0, boost=boost)
-        yield from self.dodge(self.ball_pos - self.me.pos)
+        yield from self.dodge((self.ball_pos if target is None else target) - self.me.pos)
         yield from self.recover()
 
     def dodge(self, direction):
@@ -532,7 +553,6 @@ class Bot(BaseAgent):
         # WHY: airborne with no mechanic running (a bump, falling off a wall): land well before deciding anything.
         return self.start(self.recover(), "recover")
 
-    # ------------------------------------------------------------------ driving
     def drive_to(self, target, speed, boost_ok, reverse=False):
         """Steer at `target` and hold `speed` (uu/s) using throttle, boost and powerslide."""
         me = self.me
@@ -570,30 +590,9 @@ class Bot(BaseAgent):
         throttle = clamp(local[0] / 150.0, -1.0, 1.0)
         if abs(angle) > 0.4 and abs(throttle) < 0.4:   # creep so the wheels can turn us toward the ball
             throttle = math.copysign(0.4, local[0] or 1.0)
-        return SimpleControllerState(throttle=throttle, steer=clamp(3.0 * angle, -1.0, 1.0) * math.copysign(1.0, throttle))
-
-    # ------------------------------------------------------------------ debug
-    def record(self, controls):
-        try:
-            if self.recorder is None:
-                self.recorder = Recorder(self.name, self.index)
-            self.recorder.log(self, controls)
-        except Exception as error:   # a broken recorder must never cost us a game
-            CONFIG["record_match"] = False
-            self.logger.warning(f"Match recording stopped: {error}")
+        steer = clamp(3.0 * angle, -1.0, 1.0) * math.copysign(1.0, throttle)   # reversing steers the other way
+        return SimpleControllerState(throttle=throttle, steer=steer)
 
     def retire(self):
         if self.recorder is not None:
             self.recorder.close()
-
-    def render(self):
-        if not CONFIG["debug_render"]:
-            return
-        r = self.renderer
-        r.begin_rendering()
-        mech = self.routine_name if self.routine else self.mechanic
-        text = f"{self.name}: {self.state} | {mech or '-'} | boost {self.me.boost} | taps {self.air_touches}"
-        r.draw_string_2d(20, 20 + 30 * self.index, 1, 1, text, r.white())
-        r.draw_line_3d(self.me.pos, self.target_point, r.cyan())
-        r.draw_line_3d(self.ball_pos, self.path[-1], r.yellow())
-        r.end_rendering()
